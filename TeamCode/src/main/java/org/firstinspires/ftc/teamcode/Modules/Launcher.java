@@ -7,12 +7,16 @@ import com.bylazar.configurables.annotations.GenericValue;
 import com.pedropathing.ivy.Command;
 import com.pedropathing.ivy.behaviors.InterruptedBehavior;
 import com.qualcomm.hardware.rev.Rev2mDistanceSensor;
+import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
+import com.qualcomm.robotcore.util.ElapsedTime;
 
 import org.firstinspires.ftc.robotcore.external.Telemetry;
 import org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 import org.firstinspires.ftc.teamcode.core.Module;
 import org.firstinspires.ftc.teamcode.core.PID;
 
@@ -20,11 +24,17 @@ public class Launcher extends Module {
     private final DcMotorEx master, slave;
     private final Rev2mDistanceSensor sensor;
     private final PID pid = new PID(LauncherConfig.chargingCoefficients).setIRange(LauncherConfig.iRange);
+    private ElapsedTime sensorTimer = new ElapsedTime();
+    private double filteredDistance = Double.NaN;
 
     public Launcher(HardwareMap map, Telemetry telemetry) {
         super(map, telemetry);
         master = hardwareMap.get(DcMotorEx.class, LauncherConfig.leftMotorName);
         slave = hardwareMap.get(DcMotorEx.class, LauncherConfig.rightMotorName);
+        master.setDirection(DcMotorSimple.Direction.REVERSE);
+        slave.setDirection(DcMotorSimple.Direction.FORWARD);
+        master.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        slave.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         sensor = hardwareMap.get(Rev2mDistanceSensor.class, LauncherConfig.distanceSensorName);
     }
 
@@ -37,17 +47,37 @@ public class Launcher extends Module {
     public void stop() {
 
     }
-    private double getFilteredDistance(){
-        return 1;
+
+    private double getFilteredDistance() {
+        double rawDistance = sensor.getDistance(DistanceUnit.MM);
+        if (!Double.isFinite(rawDistance)) {
+            return Double.isNaN(filteredDistance) ? rawDistance : filteredDistance;
+        }
+        double dt = sensorTimer.seconds();
+        sensorTimer.reset();
+        if (Double.isNaN(filteredDistance) || LauncherConfig.distanceFilterTauSeconds <= 0) {
+            filteredDistance = rawDistance;
+        } else {
+            double alpha = dt / (LauncherConfig.distanceFilterTauSeconds + dt);
+            filteredDistance += alpha * (rawDistance - filteredDistance);
+        }
+        return filteredDistance;
     }
-    public Command holding(){
+
+    public Command holding() {
         return Command.build()
                 .setStart(() -> {
                     pid.setTarget(LauncherConfig.chargeDist);
                 })
                 .setExecute(() -> {
-                    if(master.getCurrent(CurrentUnit.MILLIAMPS) > LauncherConfig.chargeAmps)
+                    pid.setTarget(LauncherConfig.chargeDist);
+                    pid.setIRange(LauncherConfig.iRange);
+                    if (master.getCurrent(CurrentUnit.MILLIAMPS) > LauncherConfig.chargeAmps)
                         pid.setCoefficients(LauncherConfig.holdingCoefficients);
+                    else {
+                        pid.setCoefficients(LauncherConfig.chargingCoefficients);
+                        pid.reset();
+                    }
                     double power = pid.calculate(getFilteredDistance());
                     master.setPower(power);
                     slave.setPower(power);
@@ -57,31 +87,45 @@ public class Launcher extends Module {
                 .setInterruptedBehavior(InterruptedBehavior.SUSPEND)
                 .setPriority(0);
     }
-    public Command shoot(){
+
+    public Command shoot() {
         return Command.build()
-                .setStart(()->{
+                .setStart(() -> {
                     pid.setCoefficients(LauncherConfig.chargingCoefficients);
                     pid.reset();
                 })
-                .setExecute(()->{
+                .setExecute(() -> {
                     master.setPower(LauncherConfig.shootPower);
                     slave.setPower(LauncherConfig.shootPower);
                 })
-                .setDone(()-> getFilteredDistance() > LauncherConfig.chargeDist + LauncherConfig.chargeDistOffset)
+                .setEnd(endCondition -> {
+                    master.setPower(0);
+                    slave.setPower(0);
+                    pid.reset();
+                })
+                .setDone(() -> getFilteredDistance() > LauncherConfig.chargeDist + LauncherConfig.chargeDistOffset)
                 .requiring(master, slave)
                 .setPriority(1);
     }
+
+    public void addTelemetry() {
+        telemetry.addData("I", pid.getI());
+        telemetry.addData("error", pid.getError());
+    }
+
 }
 
 @Configurable
 class LauncherConfig {
-    public static String leftMotorName = "", rightMotorName = "", distanceSensorName = "";
-    public static PIDFCoefficients chargingCoefficients = new PIDFCoefficients(-0.03, -0.0001, 0, 0);
-    public static PIDFCoefficients holdingCoefficients = new PIDFCoefficients(-0.03, -0.0001, 0, 0);
+    public static String leftMotorName = "left", rightMotorName = "right", distanceSensorName = "sensor";
+    public static PIDFCoefficients chargingCoefficients = new PIDFCoefficients(-0.008, -0.000, 0, 0);
+    public static PIDFCoefficients holdingCoefficients = new PIDFCoefficients(-0.02, -0.0001, 0, 0);
     @GenericValue(tParam = Double.class)
-    public static Range<Double> iRange = new Range<>(-0.6, 0.6);
-    public static double chargeDist = 95;
+    public static Range<Double> iRange = new Range<>(-0.65, 0.65);
+    public static double chargeDist = 92;
     public static double chargeDistOffset = 50;
-    public static double chargeAmps = 1000;
+    public static double chargeAmps = 1200;
     public static double shootPower = 1;
+    public static double distanceFilterTauSeconds = 0.05;
+
 }

@@ -7,8 +7,8 @@ import com.qualcomm.robotcore.util.ElapsedTime;
 
 public class PID {
     private PIDFCoefficients coefficients;
-    private double lastError = 0, errorSum = 0, target = 0;
-    private long lastTime = 0;
+    private double lastTime = 0, lastError = 0, errorSum = 0, target = 0;
+
     private Range<Double> outputRange = new Range<>(-1.0, 1.0), iRange = new Range<>(-1.0, 1.0);
     private final ElapsedTime timer;
 
@@ -48,18 +48,28 @@ public class PID {
     public double calculate(double current) {
         double error = target - current;
         double p = coefficients.p * error;
-        long time = timer.nanoseconds();
-        errorSum += error;
-        long deltaTime = time - lastTime;
-        double i = iRange.clamp(coefficients.i * errorSum * deltaTime);
-        double d = coefficients.d * (error - lastError) / deltaTime;
+        double time = timer.seconds();
+        double deltaTime = (time - lastTime);
+        errorSum += error * deltaTime;
+        double i = iRange.clamp(coefficients.i * errorSum);
+        double d = deltaTime > 0 && lastTime != 0
+                ? coefficients.d * (error - lastError) / deltaTime
+                : 0;
         double f = target * coefficients.f;
         lastError = error;
         lastTime = time;
         return outputRange.clamp(p + i + d + f);
     }
-    public double calculate(double current, double target){
+
+    public double calculate(double current, double target) {
         setTarget(target);
         return calculate(current);
+    }
+
+    public double getI() {
+        return iRange.clamp(coefficients.i * errorSum);
+    }
+    public double getError(){
+        return lastError;
     }
 }
